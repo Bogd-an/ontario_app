@@ -22,14 +22,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private Thread serverThread;
     private boolean isRunning = false;
     
-    // Фіксована роздільна здатність стріму
-    private final int FRAME_WIDTH = 640;
-    private final int FRAME_HEIGHT = 480;
-    
-    // Формат RGB_565 займає 2 байти на піксель
+    // НОВА РОЗДІЛЬНА ЗДАТНІСТЬ: HD 720p (16:9)
+    private final int FRAME_WIDTH = 1280;
+    private final int FRAME_HEIGHT = 720;
     private final int FRAME_SIZE = FRAME_WIDTH * FRAME_HEIGHT * 2; 
 
-    private String currentStatus = "Очікування сирого потоку (Raw Pixels)...";
+    private String currentStatus = "Очікування HD потоку...";
     private int currentFps = 0;
     private int frameCount = 0;
     private long lastTime = 0;
@@ -52,14 +50,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         } else {
             canvas.drawColor(Color.BLACK);
         }
+        
         Paint textPaint = new Paint();
         textPaint.setColor(Color.GREEN);
         textPaint.setTextSize(40);
         textPaint.setFakeBoldText(true);
         textPaint.setShadowLayer(5f, 2f, 2f, Color.BLACK);
+        
         canvas.drawText(currentStatus, 30, 60, textPaint);
         if (bitmap != null) {
-            canvas.drawText(String.format("FPS: %d | Raw Mode: %d KB/frame", currentFps, FRAME_SIZE / 1024), 30, 110, textPaint);
+            canvas.drawText(String.format("HD 720p | FPS: %d | Пакет: %d MB", currentFps, FRAME_SIZE / (1024*1024)), 30, 110, textPaint);
         }
     }
 
@@ -71,15 +71,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             public void run() {
                 try {
                     ServerSocket serverSocket = new ServerSocket(8080);
-                    
-                    // --- МАГІЯ: Виділяємо пам'ять ОДИН РАЗ на весь час ---
                     byte[] frameData = new byte[FRAME_SIZE];
                     ByteBuffer buffer = ByteBuffer.wrap(frameData);
                     Bitmap bitmap = Bitmap.createBitmap(FRAME_WIDTH, FRAME_HEIGHT, Bitmap.Config.RGB_565);
 
                     while (isRunning) {
                         Socket client = serverSocket.accept();
-                        currentStatus = "Стрім іде (Direct Memory Copy)";
+                        currentStatus = "Стрім іде (Raw HD)";
                         DataInputStream dis = new DataInputStream(client.getInputStream());
                         
                         lastTime = System.currentTimeMillis();
@@ -87,13 +85,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
                         while (isRunning && !client.isClosed()) {
                             try {
-                                // Читаємо РІВНО один кадр у буфер (без парсингу розмірів)
                                 dis.readFully(frameData);
-                                
-                                // Скидаємо позицію буфера в нуль
                                 buffer.rewind();
-                                
-                                // МИТТЄВО копіюємо байти у відеопам'ять (без декодування)
                                 bitmap.copyPixelsFromBuffer(buffer);
                                 
                                 frameCount++;
@@ -111,12 +104,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                                 } finally {
                                     if (canvas != null) holder.unlockCanvasAndPost(canvas);
                                 }
-                            } catch (Exception e) { 
-                                break; 
-                            }
+                            } catch (Exception e) { break; }
                         }
                         client.close();
-                        currentStatus = "Обрив. Очікування...";
+                        currentStatus = "Обрив зв'язку...";
                     }
                     serverSocket.close();
                 } catch (Exception e) {}
