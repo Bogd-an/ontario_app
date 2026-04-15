@@ -27,10 +27,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private final int FRAME_HEIGHT = 720;
     private final int FRAME_SIZE = FRAME_WIDTH * FRAME_HEIGHT * 2; 
 
-    private String currentStatus = "Очікування TURBO-потоку...";
+    private String currentStatus = "Очікування Dirty Rectangles...";
     private int currentFps = 0;
     private int frameCount = 0;
     private long lastTime = 0;
+    private int lastBandwidth = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -42,7 +43,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         holder.addCallback(this);
     }
 
-    private void drawDebugOverlay(Canvas canvas, Bitmap bitmap) {
+    private void drawDebugOverlay(Canvas canvas, Bitmap bitmap, int w, int h) {
         if (canvas == null) return;
         if (bitmap != null) {
             Rect destRect = new Rect(0, 0, canvas.getWidth(), canvas.getHeight());
@@ -59,7 +60,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         
         canvas.drawText(currentStatus, 30, 60, textPaint);
         if (bitmap != null) {
-            canvas.drawText(String.format("TURBO HD | FPS: %d", currentFps), 30, 110, textPaint);
+            canvas.drawText(String.format("SMART HD | FPS: %d | Оновлено: %dx%d (%d KB)", currentFps, w, h, lastBandwidth), 30, 110, textPaint);
         }
     }
 
@@ -71,18 +72,20 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             public void run() {
                 try {
                     ServerSocket serverSocket = new ServerSocket(8080);
-                    byte[] frameData = new byte[FRAME_SIZE];
-                    ByteBuffer buffer = ByteBuffer.wrap(frameData);
+                    
+                    // Майстер-буфер, що зберігає ОСТАННІЙ повний кадр
+                    byte[] masterPixels = new byte[FRAME_SIZE];
+                    ByteBuffer masterBuffer = ByteBuffer.wrap(masterPixels);
                     Bitmap bitmap = Bitmap.createBitmap(FRAME_WIDTH, FRAME_HEIGHT, Bitmap.Config.RGB_565);
+                    
+                    // Малий буфер для прийому брудного шматка
+                    byte[] netBuffer = new byte[FRAME_SIZE];
 
                     while (isRunning) {
                         Socket client = serverSocket.accept();
-                        currentStatus = "Стрім іде на максималках";
+                        currentStatus = "Стрім іде (Dirty Rectangles)";
                         
-                        // РОЗГІН СОКЕТА: Збільшуємо розмір вікна прийому до 4 МБ
                         client.setReceiveBufferSize(4 * 1024 * 1024);
-                        
-                        // РОЗГІН ЧИТАННЯ: Обертаємо потік у BufferedInputStream на 2 Мегабайти
                         DataInputStream dis = new DataInputStream(new BufferedInputStream(client.getInputStream(), 2 * 1024 * 1024));
                         
                         lastTime = System.currentTimeMillis();
@@ -90,9 +93,32 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
                         while (isRunning && !client.isClosed()) {
                             try {
-                                dis.readFully(frameData);
-                                buffer.rewind();
-                                bitmap.copyPixelsFromBuffer(buffer);
+                                // 1. Читаємо координати брудного прямокутника (4 unsigned shorts = 8 байт)
+                                int x = dis.readUnsignedShort();
+                                int y = dis.readUnsignedShort();
+                                int w = dis.readUnsignedShort();
+                                int h = dis.readUnsignedShort();
+                                
+                                // Якщо ширина або висота 0 - змін не було (Keep-Alive)
+                                if (w > 0 && h > 0) {
+                                    int bytesToRead = w * h * 2;
+                                    dis.readFully(netBuffer, 0, bytesToRead);
+                                    lastBandwidth = bytesToRead / 1024;
+                                    
+                                    // 2. НАШВИДША В СВІТІ ОПЕРАЦІЯ (Native C System.arraycopy)
+                                    // Вшиваємо отриманий шматок у великий Майстер-буфер
+                                    for (int row = 0; row < h; row++) {
+                                        int destOffset = ((y + row) * FRAME_WIDTH + x) * 2;
+                                        int srcOffset = row * w * 2;
+                                        System.arraycopy(netBuffer, srcOffset, masterPixels, destOffset, w * 2);
+                                    }
+                                    
+                                    // 3. Закидаємо оновлений Майстер-буфер у відеокарту
+                                    masterBuffer.rewind();
+                                    bitmap.copyPixelsFromBuffer(masterBuffer);
+                                } else {
+                                    lastBandwidth = 0; // Трафік 0 KB
+                                }
                                 
                                 frameCount++;
                                 long now = System.currentTimeMillis();
@@ -105,7 +131,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                                 Canvas canvas = null;
                                 try {
                                     canvas = holder.lockCanvas();
-                                    drawDebugOverlay(canvas, bitmap);
+                                    drawDebugOverlay(canvas, bitmap, w, h);
                                 } finally {
                                     if (canvas != null) holder.unlockCanvasAndPost(canvas);
                                 }
