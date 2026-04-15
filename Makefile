@@ -1,6 +1,6 @@
 # --- КОНФІГУРАЦІЯ Cyberdeck ---
-WIDTH = 960
-HEIGHT= 720
+WIDTH = 1024
+HEIGHT= 768
 DEVICE_ID=BaytrailC6A3B6D6
 # ------------------------------
 

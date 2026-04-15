@@ -66,7 +66,7 @@ def start_stream():
                         
                         # Динамічна пауза: тримаємо стабільні 20 FPS (0.05 сек на кадр)
                         elapsed = time.time() - start_time
-                        sleep_time = max(0.01, 0.05 - elapsed)
+                        sleep_time = max(0.01, 0.1 - elapsed)
                         time.sleep(sleep_time)
 
             except Exception as e:
