@@ -5,85 +5,74 @@ import time
 import mss
 import pyautogui
 import struct
+import os
 
 HOST = '192.168.42.129'
 PORT = 8080
-WIDTH = 1280
-HEIGHT = 720
+WIDTH = int(os.environ.get('WIDTH', 960))
+HEIGHT = int(os.environ.get('HEIGHT', 720))
+
+print(f"[*] Робоча роздільна здатність: {WIDTH}x{HEIGHT}")
 
 def start_stream():
-    print(f"[*] Підключення до Ontario {HOST}:{PORT}")
+    print(f"[*] Starting Stable Cyberdeck Streamer...")
     mac_w, mac_h = pyautogui.size()
-    pyautogui.FAILSAFE = False
     
     with mss.mss() as sct:
-        monitor = sct.monitors[1] 
+        monitor = sct.monitors[1]
+        prev_frame = None
 
         while True:
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
                     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     s.connect((HOST, PORT))
-                    print(f"[+] З'єднання встановлено! DIRTY RECTANGLES MODE...")
-                    
-                    prev_frame = None
+                    print("[+] Connected to Tablet!")
 
                     while True:
-                        # 1. Скріншот та курсор
-                        sct_img = sct.grab(monitor)
-                        img = np.array(sct_img)[:,:,:3] 
+                        start_time = time.time()
+                        
+                        # Захоплення
+                        img = np.array(sct.grab(monitor))[:,:,:3]
                         frame = cv2.resize(img, (WIDTH, HEIGHT))
                         
+                        # Курсор
                         mx, my = pyautogui.position()
-                        target_x = max(0, min(WIDTH-1, int((mx / mac_w) * WIDTH)))
-                        target_y = max(0, min(HEIGHT-1, int((my / mac_h) * HEIGHT)))
-                        
-                        cv2.drawMarker(frame, (target_x, target_y), (0, 0, 0), markerType=cv2.MARKER_CROSS, markerSize=22, thickness=4)
-                        cv2.drawMarker(frame, (target_x, target_y), (0, 255, 0), markerType=cv2.MARKER_CROSS, markerSize=20, thickness=2)
-                        
-                        # 2. АЛГОРИТМ БРУДНИХ ПРЯМОКУТНИКІВ
+                        tx = max(0, min(WIDTH-1, int((mx / mac_w) * WIDTH)))
+                        ty = max(0, min(HEIGHT-1, int((my / mac_h) * HEIGHT)))
+                        cv2.drawMarker(frame, (tx, ty), (90, 90, 90), cv2.MARKER_CROSS, 20, 2)
+
                         if prev_frame is None:
                             x, y, w, h = 0, 0, WIDTH, HEIGHT
-                            dirty_frame = frame
+                            dirty = frame
                         else:
-                            # Шукаємо різницю між поточним і минулим кадром
                             diff = cv2.absdiff(frame, prev_frame)
-                            gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-                            
-                            # Відсікаємо мікрошум
-                            _, thresh = cv2.threshold(gray_diff, 5, 255, cv2.THRESH_BINARY)
-                            
-                            # Знаходимо межі усіх змін
+                            gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+                            _, thresh = cv2.threshold(gray, 8, 255, cv2.THRESH_BINARY)
                             x, y, w, h = cv2.boundingRect(thresh)
                             
                             if w == 0 or h == 0:
-                                # Змін немає! Відправляємо Keep-Alive пакет (8 байт)
                                 s.sendall(struct.pack('>4H', 0, 0, 0, 0))
-                                time.sleep(0.01)
+                                time.sleep(0.05) # Жорсткий ліміт для порожніх кадрів
                                 continue
-                                
-                            # Вирізаємо ТІЛЬКИ те, що змінилося
-                            dirty_frame = frame[y:y+h, x:x+w]
-                        
-                        # Зберігаємо кадр для наступного порівняння
+                            
+                            dirty = frame[y:y+h, x:x+w]
+
                         prev_frame = frame.copy()
+                        data = cv2.cvtColor(dirty, cv2.COLOR_BGR2BGR565).tobytes()
                         
-                        # 3. Конвертуємо лише брудний шматочок у RGB_565
-                        frame565 = cv2.cvtColor(dirty_frame, cv2.COLOR_BGR2BGR565)
-                        raw_bytes = frame565.tobytes()
-                        
-                        # 4. Відправляємо заголовок (X, Y, Ширина, Висота) + Payload
-                        # '>4H' означає 4 Unsigned Shorts у Big Endian
                         s.sendall(struct.pack('>4H', x, y, w, h))
-                        s.sendall(raw_bytes)
+                        s.sendall(data)
                         
-            except ConnectionRefusedError:
-                print("[-] Планшет не готовий. Чекаємо...")
-                time.sleep(2)
+                        # Динамічна пауза: тримаємо стабільні 20 FPS (0.05 сек на кадр)
+                        elapsed = time.time() - start_time
+                        sleep_time = max(0.01, 0.05 - elapsed)
+                        time.sleep(sleep_time)
+
             except Exception as e:
-                print(f"[-] Обрив: {e}. Перепідключення...")
+                print(f"[-] Error: {e}. Retrying in 2s...")
                 time.sleep(2)
+                prev_frame = None
 
 if __name__ == '__main__':
     start_stream()
