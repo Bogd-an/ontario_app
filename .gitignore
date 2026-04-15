@@ -1,0 +1,22 @@
+# 📦 Директорії збірки (Gradle генерує їх автоматично)
+/build/
+/app/build/
+.gradle/
+
+# 🛑 Локальні конфіги (ТУТ ШЛЯХ ДО SDK, його не можна комітити!)
+local.properties
+
+# 🍎 Специфічні файли macOS
+.DS_Store
+
+# 📝 Налаштування редакторів коду (VS Code, Android Studio)
+.idea/
+*.iml
+.vscode/
+# *.code-workspace
+
+# ⚙️ Зібрані артефакти (на випадок, якщо вони опиняться поза папкою build)
+# *.apk
+# *.ap_
+*.dex
+*.class
