@@ -11,6 +11,7 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.WindowManager;
 
+import java.io.BufferedInputStream;
 import java.io.DataInputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -22,12 +23,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private Thread serverThread;
     private boolean isRunning = false;
     
-    // НОВА РОЗДІЛЬНА ЗДАТНІСТЬ: HD 720p (16:9)
     private final int FRAME_WIDTH = 1280;
     private final int FRAME_HEIGHT = 720;
     private final int FRAME_SIZE = FRAME_WIDTH * FRAME_HEIGHT * 2; 
 
-    private String currentStatus = "Очікування HD потоку...";
+    private String currentStatus = "Очікування TURBO-потоку...";
     private int currentFps = 0;
     private int frameCount = 0;
     private long lastTime = 0;
@@ -59,7 +59,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         
         canvas.drawText(currentStatus, 30, 60, textPaint);
         if (bitmap != null) {
-            canvas.drawText(String.format("HD 720p | FPS: %d | Пакет: %d MB", currentFps, FRAME_SIZE / (1024*1024)), 30, 110, textPaint);
+            canvas.drawText(String.format("TURBO HD | FPS: %d", currentFps), 30, 110, textPaint);
         }
     }
 
@@ -77,8 +77,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
                     while (isRunning) {
                         Socket client = serverSocket.accept();
-                        currentStatus = "Стрім іде (Raw HD)";
-                        DataInputStream dis = new DataInputStream(client.getInputStream());
+                        currentStatus = "Стрім іде на максималках";
+                        
+                        // РОЗГІН СОКЕТА: Збільшуємо розмір вікна прийому до 4 МБ
+                        client.setReceiveBufferSize(4 * 1024 * 1024);
+                        
+                        // РОЗГІН ЧИТАННЯ: Обертаємо потік у BufferedInputStream на 2 Мегабайти
+                        DataInputStream dis = new DataInputStream(new BufferedInputStream(client.getInputStream(), 2 * 1024 * 1024));
                         
                         lastTime = System.currentTimeMillis();
                         frameCount = 0;
