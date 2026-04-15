@@ -26,3 +26,8 @@ scrcpy:
 clean:
 	./gradlew clean
 	rm -rf $(RELEASE_DIR)
+
+
+c:
+	git add .
+	"$(filter-out $@,$(MAKECMDGOALS))"

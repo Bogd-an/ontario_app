@@ -23,11 +23,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private Thread serverThread;
     private boolean isRunning = false;
     
-    private final int FRAME_WIDTH = 1280;
-    private final int FRAME_HEIGHT = 720;
+    // МАКСИМАЛЬНА РОЗДІЛЬНА ЗДАТНІСТЬ: Full HD
+    private final int FRAME_WIDTH = 1920;
+    private final int FRAME_HEIGHT = 1080;
     private final int FRAME_SIZE = FRAME_WIDTH * FRAME_HEIGHT * 2; 
 
-    private String currentStatus = "Очікування Dirty Rectangles...";
+    private String currentStatus = "Очікування Full HD потоку...";
     private int currentFps = 0;
     private int frameCount = 0;
     private long lastTime = 0;
@@ -60,7 +61,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         
         canvas.drawText(currentStatus, 30, 60, textPaint);
         if (bitmap != null) {
-            canvas.drawText(String.format("SMART HD | FPS: %d | Оновлено: %dx%d (%d KB)", currentFps, w, h, lastBandwidth), 30, 110, textPaint);
+            canvas.drawText(String.format("FULL HD | FPS: %d | Оновлено: %dx%d (%d KB)", currentFps, w, h, lastBandwidth), 30, 110, textPaint);
         }
     }
 
@@ -73,51 +74,45 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 try {
                     ServerSocket serverSocket = new ServerSocket(8080);
                     
-                    // Майстер-буфер, що зберігає ОСТАННІЙ повний кадр
                     byte[] masterPixels = new byte[FRAME_SIZE];
                     ByteBuffer masterBuffer = ByteBuffer.wrap(masterPixels);
                     Bitmap bitmap = Bitmap.createBitmap(FRAME_WIDTH, FRAME_HEIGHT, Bitmap.Config.RGB_565);
                     
-                    // Малий буфер для прийому брудного шматка
                     byte[] netBuffer = new byte[FRAME_SIZE];
 
                     while (isRunning) {
                         Socket client = serverSocket.accept();
-                        currentStatus = "Стрім іде (Dirty Rectangles)";
+                        currentStatus = "Стрім іде (Full HD + Dirty Rect)";
                         
-                        client.setReceiveBufferSize(4 * 1024 * 1024);
-                        DataInputStream dis = new DataInputStream(new BufferedInputStream(client.getInputStream(), 2 * 1024 * 1024));
+                        // РОЗШИРЕНО БУФЕРИ ДЛЯ FULL HD (8 Мегабайтів)
+                        client.setReceiveBufferSize(8 * 1024 * 1024);
+                        DataInputStream dis = new DataInputStream(new BufferedInputStream(client.getInputStream(), 4 * 1024 * 1024));
                         
                         lastTime = System.currentTimeMillis();
                         frameCount = 0;
 
                         while (isRunning && !client.isClosed()) {
                             try {
-                                // 1. Читаємо координати брудного прямокутника (4 unsigned shorts = 8 байт)
                                 int x = dis.readUnsignedShort();
                                 int y = dis.readUnsignedShort();
                                 int w = dis.readUnsignedShort();
                                 int h = dis.readUnsignedShort();
                                 
-                                // Якщо ширина або висота 0 - змін не було (Keep-Alive)
                                 if (w > 0 && h > 0) {
                                     int bytesToRead = w * h * 2;
                                     dis.readFully(netBuffer, 0, bytesToRead);
                                     lastBandwidth = bytesToRead / 1024;
                                     
-                                    // 2. НАШВИДША В СВІТІ ОПЕРАЦІЯ (Native C System.arraycopy)
-                                    // Вшиваємо отриманий шматок у великий Майстер-буфер
                                     for (int row = 0; row < h; row++) {
                                         int destOffset = ((y + row) * FRAME_WIDTH + x) * 2;
                                         int srcOffset = row * w * 2;
                                         System.arraycopy(netBuffer, srcOffset, masterPixels, destOffset, w * 2);
                                     }
                                     
-                                    // 3. Закидаємо оновлений Майстер-буфер у відеокарту
                                     masterBuffer.rewind();
                                     bitmap.copyPixelsFromBuffer(masterBuffer);
                                 } else {
-                                    lastBandwidth = 0; // Трафік 0 KB
+                                    lastBandwidth = 0; 
                                 }
                                 
                                 frameCount++;
