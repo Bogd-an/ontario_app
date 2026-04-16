@@ -1,0 +1,40 @@
+{
+  "stringTable": {},
+  "buildFiles": [
+    "/Users/admin/Documents/ontario/ontario_app/app/src/main/cpp/CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "/Users/admin/Android/Sdk/cmake/3.10.2.4988404/bin/ninja",
+      "-C",
+      "/Users/admin/Documents/ontario/ontario_app/app/.cxx/Debug/2i2n1m6y/x86",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "/Users/admin/Android/Sdk/cmake/3.10.2.4988404/bin/ninja",
+    "-C",
+    "/Users/admin/Documents/ontario/ontario_app/app/.cxx/Debug/2i2n1m6y/x86",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "native_stream-Debug-x86": {
+      "buildCommandComponents": [
+        "/Users/admin/Android/Sdk/cmake/3.10.2.4988404/bin/ninja",
+        "-C",
+        "/Users/admin/Documents/ontario/ontario_app/app/.cxx/Debug/2i2n1m6y/x86",
+        "native_stream"
+      ],
+      "buildType": "debug",
+      "abi": "x86",
+      "artifactName": "native_stream",
+      "output": "/Users/admin/Documents/ontario/ontario_app/app/build/intermediates/cxx/Debug/2i2n1m6y/obj/x86/libnative_stream.so",
+      "runtimeFiles": []
+    }
+  },
+  "toolchains": {},
+  "cFileExtensions": [
+    "c"
+  ],
+  "cppFileExtensions": []
+}

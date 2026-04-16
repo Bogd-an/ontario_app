@@ -1,0 +1,12 @@
+# ninja log v5
+0	349	1776297567	CMakeFiles/native_stream.dir/native_stream.c.o	e236ac8a7f1c6a44
+349	462	1776297567	/Users/admin/Documents/ontario/ontario_app/app/build/intermediates/cxx/Debug/2i2n1m6y/obj/x86/libnative_stream.so	6133507e1382759c
+1	785	1776297744	CMakeFiles/native_stream.dir/native_stream.c.o	e236ac8a7f1c6a44
+785	930	1776297744	/Users/admin/Documents/ontario/ontario_app/app/build/intermediates/cxx/Debug/2i2n1m6y/obj/x86/libnative_stream.so	6133507e1382759c
+1	487	1776298084	CMakeFiles/native_stream.dir/native_stream.c.o	e236ac8a7f1c6a44
+487	645	1776298085	/Users/admin/Documents/ontario/ontario_app/app/build/intermediates/cxx/Debug/2i2n1m6y/obj/x86/libnative_stream.so	6133507e1382759c
+0	30	0	clean	1976140eae3541e6
+0	469	1776298620	CMakeFiles/native_stream.dir/native_stream.c.o	e236ac8a7f1c6a44
+469	619	1776298620	/Users/admin/Documents/ontario/ontario_app/app/build/intermediates/cxx/Debug/2i2n1m6y/obj/x86/libnative_stream.so	6133507e1382759c
+1	789	1776299006	CMakeFiles/native_stream.dir/native_stream.c.o	e236ac8a7f1c6a44
+789	934	1776299006	/Users/admin/Documents/ontario/ontario_app/app/build/intermediates/cxx/Debug/2i2n1m6y/obj/x86/libnative_stream.so	6133507e1382759c
