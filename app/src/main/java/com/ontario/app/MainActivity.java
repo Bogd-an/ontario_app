@@ -65,9 +65,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         nativeThread = new Thread(new Runnable() {
             @Override
             public void run() {
+                // ОПТ: Підвищуємо пріоритет потоку — менше переривань від ОС
+                android.os.Process.setThreadPriority(
+                    android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY
+                );
                 startNativeStream(holder.getSurface(), FRAME_WIDTH, FRAME_HEIGHT);
             }
         });
+        nativeThread.setName("native-stream");
         nativeThread.start();
     }
 
