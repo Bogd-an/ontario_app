@@ -1,8 +1,7 @@
 #include <jni.h>
-#include <android/native_window.h>
-#include <android/native_window_jni.h>
-#include <android/rect.h>
 #include <android/log.h>
+#include <GLES2/gl2.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -14,20 +13,74 @@
 #include <errno.h>
 #include <signal.h>
 
-#define LOG_TAG "OntarioNative"
+#define LOG_TAG "OntarioGL"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 #define PORT     8080
-#define MAX_W        960
-#define MAX_H        720
-#define SOCK_BUF (2 * 1024 * 1024)
+#define MAX_W        1024
+#define MAX_H        768
+#define SOCK_BUF (4 * 1024 * 1024) // 4 МБ для стабільності черги ядра
 
+// --- Стан програми ---
 volatile int is_running = 0;
 int server_sock = -1;
 int client_sock = -1;
 
-// Захищене читання з обробкою переривань
+// --- Багатопотоковість ---
+pthread_t net_thread;
+pthread_mutex_t frame_mutex = PTHREAD_MUTEX_INITIALIZER;
+volatile int frame_updated = 0;
+
+// --- Буфери ---
+uint16_t *master_frame = NULL; // Єдиний справжній кадр (полотно)
+uint16_t *net_buffer = NULL;   // Тимчасовий буфер для прийому шматка з мережі
+
+// --- OpenGL ---
+GLuint texture_id;
+GLuint shader_program;
+GLint position_loc, texcoord_loc, sampler_loc;
+
+const char* vertex_shader_src =
+    "attribute vec4 a_position;\n"
+    "attribute vec2 a_texcoord;\n"
+    "varying vec2 v_texcoord;\n"
+    "void main() {\n"
+    "  gl_Position = a_position;\n"
+    "  v_texcoord = a_texcoord;\n"
+    "}\n";
+
+const char* fragment_shader_src =
+    "precision mediump float;\n"
+    "varying vec2 v_texcoord;\n"
+    "uniform sampler2D u_sampler;\n"
+    "void main() {\n"
+    "  gl_FragColor = texture2D(u_sampler, v_texcoord);\n"
+    "}\n";
+
+GLuint load_shader(GLenum type, const char* shaderSrc) {
+    GLuint shader = glCreateShader(type);
+    if (shader == 0) return 0;
+    glShaderSource(shader, 1, &shaderSrc, NULL);
+    glCompileShader(shader);
+    GLint compiled;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (!compiled) {
+        GLint infoLen = 0;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &infoLen);
+        if (infoLen > 1) {
+            char* infoLog = malloc(sizeof(char) * infoLen);
+            glGetShaderInfoLog(shader, infoLen, NULL, infoLog);
+            LOGE("Помилка шейдера:\n%s", infoLog);
+            free(infoLog);
+        }
+        glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+// --- МЕРЕЖА ---
 ssize_t read_all(int sock, void *buf, size_t count) {
     size_t total = 0;
     char *p = (char *)buf;
@@ -35,51 +88,19 @@ ssize_t read_all(int sock, void *buf, size_t count) {
         ssize_t r = recv(sock, p + total, count - total, 0);
         if (r < 0) {
             if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) return total;
-            return -1;
+            // EAGAIN означає, що даних поки немає. Чекаємо далі.
+            if (errno == EAGAIN || errno == EWOULDBLOCK) continue; 
+            return -1; // Справжня помилка
         }
-        if (r == 0) return 0; // Сокет закрито
+        if (r == 0) return 0; // Клієнт розірвав з'єднання
         total += r;
     }
     return total;
 }
 
-JNIEXPORT void JNICALL
-Java_com_ontario_app_MainActivity_startNativeStream(
-        JNIEnv *env, jobject thiz, jobject surface, jint width, jint height) {
-
-    LOGI("Запуск %dx%d...", width, height);
-    is_running = 1;
-    
-    // Ігноруємо SIGPIPE, щоб додаток не падав при різкому обриві з'єднання
-    signal(SIGPIPE, SIG_IGN);
-
-    ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
-    if (!window) return;
-    ANativeWindow_setBuffersGeometry(window, width, height, WINDOW_FORMAT_RGB_565);
-
-    uint16_t *master_frame = NULL;
-    uint16_t *net_buffer = NULL;
-
-    // ВИПРАВЛЕННЯ 1: Вирівнювання пам'яті для x86 (Intel Atom дуже чутливий до цього)
-    posix_memalign((void**)&master_frame, 32, MAX_W * MAX_H * 2);
-    posix_memalign((void**)&net_buffer, 32, MAX_W * MAX_H * 2);
-
-    if (!master_frame || !net_buffer) {
-        LOGE("Не вистачає RAM!");
-        if(master_frame) free(master_frame);
-        if(net_buffer) free(net_buffer);
-        ANativeWindow_release(window);
-        return;
-    }
-    memset(master_frame, 0, MAX_W * MAX_H * 2);
-
+void* network_thread_func(void* arg) {
     server_sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_sock < 0) {
-        free(master_frame); free(net_buffer);
-        ANativeWindow_release(window);
-        return;
-    }
+    if (server_sock < 0) return NULL;
 
     int opt = 1;
     setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -88,39 +109,33 @@ Java_com_ontario_app_MainActivity_startNativeStream(
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
-    addr.sin_family      = AF_INET;
+    addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port        = htons(PORT);
+    addr.sin_port = htons(PORT);
 
     if (bind(server_sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(server_sock);
-        free(master_frame); free(net_buffer);
-        ANativeWindow_release(window);
-        return;
+        LOGE("Помилка bind() порту %d", PORT);
+        return NULL;
     }
     listen(server_sock, 1);
 
     while (is_running) {
         LOGI("Очікування підключення...");
         client_sock = accept(server_sock, NULL, NULL);
-        if (client_sock < 0) {
-            usleep(100000); // Запобігає 100% CPU, якщо accept сипле помилками
-            continue;
-        }
-        LOGI("Підключено!");
+        if (client_sock < 0) { usleep(100000); continue; }
+        LOGI("Клієнт підключений!");
 
-        struct timeval tv = { .tv_sec = 2, .tv_usec = 0 }; // Трохи зменшив таймаут
+        // Таймаут 15 секунд (щоб не розривалося, коли на Mac нічого не відбувається)
+        struct timeval tv = { .tv_sec = 15, .tv_usec = 0 };
         setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         int nodelay = 1;
         setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
-        memset(master_frame, 0, MAX_W * MAX_H * 2);
         uint16_t header[4];
 
         while (is_running) {
-            ssize_t h_read = read_all(client_sock, header, 8);
-            if (h_read <= 0) { LOGI("Розірвано"); break; }
-            if (h_read != 8) { LOGE("Битий заголовок"); break; }
+            // 1. Читаємо заголовок (8 байт)
+            if (read_all(client_sock, header, 8) != 8) break;
 
             uint16_t x = ntohs(header[0]);
             uint16_t y = ntohs(header[1]);
@@ -128,71 +143,132 @@ Java_com_ontario_app_MainActivity_startNativeStream(
             uint16_t h = ntohs(header[3]);
 
             if (w == 0 || h == 0) continue;
-
+            
+            // Жорсткий захист від Buffer Overflow
             if (x + w > MAX_W || y + h > MAX_H) {
-                LOGE("Координати за межами: x=%d y=%d w=%d h=%d", x, y, w, h);
+                LOGE("КРИТИЧНО: Координати за межами екрана (x:%d y:%d w:%d h:%d). Скидання.", x, y, w, h);
                 break;
             }
 
+            // 2. Читаємо сирі байти "патчу" у тимчасовий буфер
             size_t bytes = (size_t)w * h * 2;
-            ssize_t p_read = read_all(client_sock, net_buffer, bytes);
-            if (p_read != (ssize_t)bytes) { LOGE("Неповний кадр"); break; }
+            if (read_all(client_sock, net_buffer, bytes) != (ssize_t)bytes) break;
 
-            // Оновлюємо master_frame (наше внутрішнє сховище)
+            // 3. Блокуємо відеокарту і накладаємо патч ПРЯМО на master_frame
+            pthread_mutex_lock(&frame_mutex);
             for (int row = 0; row < h; row++) {
                 uint16_t *dst = master_frame + (y + row) * MAX_W + x;
-                uint16_t *src = net_buffer   + row * w;
-                memcpy(dst, src, (size_t)w * 2);
+                uint16_t *src = net_buffer + row * w;
+                memcpy(dst, src, w * 2);
             }
-
-            // ВИПРАВЛЕННЯ 2: Використовуємо Dirty Rects замість копіювання всього екрану
-            ARect dirtyBounds;
-            dirtyBounds.left   = x;
-            dirtyBounds.top    = y;
-            dirtyBounds.right  = x + w;
-            dirtyBounds.bottom = y + h;
-
-            ANativeWindow_Buffer buf;
-            // Передаємо dirtyBounds. Система сама вирішить, яку область нам дозволити перемалювати
-            if (ANativeWindow_lock(window, &buf, &dirtyBounds) != 0) {
-                usleep(5000); // Чекаємо, якщо Surface тимчасово недоступний
-                continue;
-            }
-
-            // Копіюємо ТІЛЬКИ ту область, яку запросила система (вона може бути ширшою за наш патч)
-            int copy_w = dirtyBounds.right - dirtyBounds.left;
-            int copy_h = dirtyBounds.bottom - dirtyBounds.top;
-
-            for (int row = 0; row < copy_h; row++) {
-                int src_y = dirtyBounds.top + row;
-                if (src_y >= MAX_H) break; // Захист від виходу за межі
-
-                uint16_t *src = master_frame + src_y * MAX_W + dirtyBounds.left;
-                uint16_t *dst = (uint16_t *)buf.bits + (src_y * buf.stride) + dirtyBounds.left;
-                
-                memcpy(dst, src, copy_w * 2);
-            }
-
-            ANativeWindow_unlockAndPost(window);
+            frame_updated = 1; // Даємо сигнал OpenGL перемалювати текстуру
+            pthread_mutex_unlock(&frame_mutex);
         }
 
-        LOGI("Закриваємо з'єднання...");
-        if (client_sock != -1) {
-            shutdown(client_sock, SHUT_RDWR);
-            close(client_sock);
-            client_sock = -1;
-        }
+        LOGI("З'єднання розірвано. Перезапуск...");
+        if (client_sock != -1) { close(client_sock); client_sock = -1; }
     }
+    return NULL;
+}
 
-    free(master_frame);
-    free(net_buffer);
-    ANativeWindow_release(window);
+
+// --- JNI ВЗАЄМОДІЯ (Життєвий цикл) ---
+JNIEXPORT void JNICALL
+Java_com_ontario_app_MainActivity_startNetworkThread(JNIEnv *env, jobject thiz) {
+    if (is_running) return;
+    is_running = 1;
+    signal(SIGPIPE, SIG_IGN); // Захист від падіння ядра при обриві сокета
+
+    // Виділення пам'яті, вирівняної по 32 байти (для SIMD інструкцій Intel Atom)
+    posix_memalign((void**)&master_frame, 32, MAX_W * MAX_H * 2);
+    posix_memalign((void**)&net_buffer,   32, MAX_W * MAX_H * 2);
+    
+    memset(master_frame, 0, MAX_W * MAX_H * 2);
+
+    pthread_create(&net_thread, NULL, network_thread_func, NULL);
 }
 
 JNIEXPORT void JNICALL
-Java_com_ontario_app_MainActivity_stopNativeStream(JNIEnv *env, jobject thiz) {
+Java_com_ontario_app_MainActivity_stopNetworkThread(JNIEnv *env, jobject thiz) {
     is_running = 0;
-    // Жорстко перериваємо блокуючі виклики accept() та recv()
-    if (client_sock != -1) { shutdown(client_sock, SHUT_RDWR); close(client_sock); }
-    if (server_sock != -1) { shutdown(server_sock, SHUT_RDWR); close(server_sock); }
+    if (client_sock != -1) shutdown(client_sock, SHUT_RDWR);
+    if (server_sock != -1) shutdown(server_sock, SHUT_RDWR);
+    pthread_join(net_thread, NULL);
+    
+    // Блокуємо відеокарту, перед тим як звільнити пам'ять
+    pthread_mutex_lock(&frame_mutex);
+    if (master_frame) { free(master_frame); master_frame = NULL; }
+    if (net_buffer)   { free(net_buffer);   net_buffer   = NULL; }
+    pthread_mutex_unlock(&frame_mutex);
+}
+
+
+// --- JNI ВЗАЄМОДІЯ (OpenGL Рендеринг) ---
+JNIEXPORT void JNICALL
+Java_com_ontario_app_MainActivity_nativeInitGL(JNIEnv *env, jobject thiz) {
+    GLuint vertexShader = load_shader(GL_VERTEX_SHADER, vertex_shader_src);
+    GLuint fragmentShader = load_shader(GL_FRAGMENT_SHADER, fragment_shader_src);
+
+    shader_program = glCreateProgram();
+    glAttachShader(shader_program, vertexShader);
+    glAttachShader(shader_program, fragmentShader);
+    glLinkProgram(shader_program);
+
+    position_loc = glGetAttribLocation(shader_program, "a_position");
+    texcoord_loc = glGetAttribLocation(shader_program, "a_texcoord");
+    sampler_loc  = glGetUniformLocation(shader_program, "u_sampler");
+
+    glGenTextures(1, &texture_id);
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+    
+    // Nearest фільтрація найшвидша для такого типу відображення
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // Ініціалізація пустої текстури 960x720 у відеопам'яті
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, MAX_W, MAX_H, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, NULL);
+}
+
+JNIEXPORT void JNICALL
+Java_com_ontario_app_MainActivity_nativeResizeGL(JNIEnv *env, jobject thiz, jint width, jint height) {
+    glViewport(0, 0, width, height); 
+}
+
+JNIEXPORT void JNICALL
+Java_com_ontario_app_MainActivity_nativeDrawFrame(JNIEnv *env, jobject thiz) {
+    // Ця функція викликається постійно циклом GLSurfaceView (VSYNC)
+    
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(shader_program);
+
+    GLfloat vertices[] = { -1.0f, 1.0f,  -1.0f, -1.0f,  1.0f, 1.0f,  1.0f, -1.0f };
+    GLfloat texCoords[] = { 0.0f, 0.0f,   0.0f,  1.0f,  1.0f, 0.0f,  1.0f,  1.0f };
+
+    glVertexAttribPointer(position_loc, 2, GL_FLOAT, GL_FALSE, 0, vertices);
+    glEnableVertexAttribArray(position_loc);
+
+    glVertexAttribPointer(texcoord_loc, 2, GL_FLOAT, GL_FALSE, 0, texCoords);
+    glEnableVertexAttribArray(texcoord_loc);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture_id);
+    glUniform1i(sampler_loc, 0);
+
+    // Перевіряємо, чи є нові дані для відеокарти
+    if (master_frame != NULL && frame_updated) {
+        pthread_mutex_lock(&frame_mutex);
+        // Заливаємо оновлений кадр у відеокарту (Intel HD Graphics)
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, MAX_W, MAX_H, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, master_frame);
+        frame_updated = 0;
+        pthread_mutex_unlock(&frame_mutex);
+    }
+
+    // Малюємо текстуру на весь екран
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+    // ЗАХИСТ ВІД ПЕРЕГРІВУ CPU (Ліміт ~30 FPS).
+    usleep(33000); 
 }

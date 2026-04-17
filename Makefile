@@ -1,6 +1,6 @@
 # --- КОНФІГУРАЦІЯ Cyberdeck ---
-WIDTH     = 960
-HEIGHT    = 720
+WIDTH     = 1024
+HEIGHT    = 768
 DEVICE_ID = BaytrailC6A3B6D6
 # ------------------------------
 
@@ -70,7 +70,6 @@ tether:
 	echo "==> [ПОМИЛКА] Не вдалося активувати $(IFACE) після $(TETHER_RETRIES) спроб!"; \
 	exit 1
 
-
 py:
 	@echo "==> Запуск Python скрипта ($(WIDTH)x$(HEIGHT))..."
 	@export WIDTH=$(WIDTH); export HEIGHT=$(HEIGHT); zsh -ic "py streamer.py"
@@ -89,8 +88,14 @@ clean:
 	rm -rf $(RELEASE_DIR)
 
 app:
-	@echo "==> Запуск додатку..."
-	$(ADB) shell am start -n $(PACKAGE_NAME)/$(MAIN_ACTIVITY)
+	@echo "==> Вихід на робочий стіл (обхід чорного екрана)..."
+	$(ADB) shell input keyevent 3
+	@sleep 1
+	@echo "==> Примусова зупинка старого процесу..."
+	$(ADB) shell am force-stop $(PACKAGE_NAME)
+	@sleep 1
+	@echo "==> Чистий запуск додатку..."
+	$(ADB) shell am start -W -S -n $(PACKAGE_NAME)/$(MAIN_ACTIVITY)
 
 con:
 	$(MAKE) tether

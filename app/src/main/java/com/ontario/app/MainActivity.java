@@ -1,28 +1,30 @@
 package com.ontario.app;
 
 import android.app.Activity;
+import android.opengl.GLSurfaceView;
 import android.os.Bundle;
-import android.view.Surface;
-import android.view.SurfaceHolder;
-import android.view.SurfaceView;
 import android.view.View;
 import android.view.WindowManager;
 
-public class MainActivity extends Activity implements SurfaceHolder.Callback {
+import javax.microedition.khronos.egl.EGLConfig;
+import javax.microedition.khronos.opengles.GL10;
 
-    // Фізичний максимум екрана, який ми передамо в C-код
-    private final int FRAME_WIDTH = 960;
-    private final int FRAME_HEIGHT = 720;
-    
-    private SurfaceView surfaceView;
-    private Thread nativeThread;
+public class MainActivity extends Activity {
+
+    private GLSurfaceView glSurfaceView;
 
     static {
         System.loadLibrary("native_stream");
     }
 
-    private native void startNativeStream(Surface surface, int width, int height);
-    private native void stopNativeStream();
+    // --- OpenGL Native Хуки ---
+    private native void nativeInitGL();
+    private native void nativeResizeGL(int width, int height);
+    private native void nativeDrawFrame();
+
+    // --- Мережеві Native Хуки ---
+    private native void startNetworkThread();
+    private native void stopNetworkThread();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -31,15 +33,41 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         // Забороняємо гаснути екрану
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         
-        surfaceView = new SurfaceView(this);
-        setContentView(surfaceView);
-        surfaceView.getHolder().addCallback(this);
+        glSurfaceView = new GLSurfaceView(this);
+        
+        // Встановлюємо версію OpenGL ES 2.0 (підтримується всіма, ідеально для 2D)
+        glSurfaceView.setEGLContextClientVersion(2);
+        
+        glSurfaceView.setRenderer(new GLSurfaceView.Renderer() {
+            @Override
+            public void onSurfaceCreated(GL10 gl, EGLConfig config) {
+                // Викликається один раз, тут компілюємо шейдери в С
+                nativeInitGL();
+            }
 
-        // Ховаємо інтерфейс при запуску
+            @Override
+            public void onSurfaceChanged(GL10 gl, int width, int height) {
+                // Встановлюємо glViewport у С
+                nativeResizeGL(width, height);
+            }
+
+            @Override
+            public void onDrawFrame(GL10 gl) {
+                // Викликається 60 разів на секунду. Тут робимо glTexSubImage2D
+                nativeDrawFrame();
+            }
+        });
+
+        // GLSurfaceView буде викликати onDrawFrame постійно, синхронізовано з VSYNC екрану
+        glSurfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
+
+        setContentView(glSurfaceView);
         hideSystemUI();
+
+        // Запускаємо сервер. С-код має сам створити pthread для слухання сокетів!
+        startNetworkThread();
     }
 
-    // Режим Immersive Sticky (Android 4.4+)
     private void hideSystemUI() {
         View decorView = getWindow().getDecorView();
         decorView.setSystemUiVisibility(
@@ -54,40 +82,31 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        // Знову ховаємо кнопки, якщо вони випадково з'явилися
         if (hasFocus) {
             hideSystemUI();
         }
     }
 
+    // Життєвий цикл GLSurfaceView дуже важливий для запобігання крашів
     @Override
-    public void surfaceCreated(final SurfaceHolder holder) {
-        nativeThread = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                // ОПТ: Підвищуємо пріоритет потоку — менше переривань від ОС
-                android.os.Process.setThreadPriority(
-                    android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY
-                );
-                startNativeStream(holder.getSurface(), FRAME_WIDTH, FRAME_HEIGHT);
-            }
-        });
-        nativeThread.setName("native-stream");
-        nativeThread.start();
+    protected void onResume() {
+        super.onResume();
+        if (glSurfaceView != null) {
+            glSurfaceView.onResume();
+        }
     }
 
     @Override
-    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {}
+    protected void onPause() {
+        super.onPause();
+        if (glSurfaceView != null) {
+            glSurfaceView.onPause();
+        }
+    }
 
     @Override
-    public void surfaceDestroyed(SurfaceHolder holder) {
-        stopNativeStream();
-        if (nativeThread != null) {
-            try {
-                nativeThread.join(1000);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        }
+    protected void onDestroy() {
+        super.onDestroy();
+        stopNetworkThread();
     }
 }

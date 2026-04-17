@@ -26,3 +26,5 @@ fix.sh
 app/.cxx
 
 notes
+
+*.plist

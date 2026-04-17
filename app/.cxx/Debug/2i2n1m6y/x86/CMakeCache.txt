@@ -204,8 +204,8 @@ CMAKE_SYSTEM_NAME:UNINITIALIZED=Android
 //No help, variable specified on the command line.
 CMAKE_SYSTEM_VERSION:UNINITIALIZED=19
 
-//The CMake toolchain file
-CMAKE_TOOLCHAIN_FILE:FILEPATH=/Users/admin/Android/Sdk/ndk/21.4.7075529/build/cmake/android.toolchain.cmake
+//No help, variable specified on the command line.
+CMAKE_TOOLCHAIN_FILE:UNINITIALIZED=/Users/admin/Android/Sdk/ndk/21.4.7075529/build/cmake/android.toolchain.cmake
 
 //If this value is on, makefiles will be generated without the
 // .SILENT directive, and all commands will be echoed to the console
@@ -226,7 +226,7 @@ android-lib:FILEPATH=/Users/admin/Android/Sdk/ndk/21.4.7075529/toolchains/llvm/p
 log-lib:FILEPATH=/Users/admin/Android/Sdk/ndk/21.4.7075529/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/i686-linux-android/19/liblog.so
 
 //Dependencies for the target
-native_stream_LIB_DEPENDS:STATIC=general;/Users/admin/Android/Sdk/ndk/21.4.7075529/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/i686-linux-android/19/liblog.so;general;/Users/admin/Android/Sdk/ndk/21.4.7075529/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/i686-linux-android/19/libandroid.so;
+native_stream_LIB_DEPENDS:STATIC=general;/Users/admin/Android/Sdk/ndk/21.4.7075529/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/i686-linux-android/19/liblog.so;general;/Users/admin/Android/Sdk/ndk/21.4.7075529/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/lib/i686-linux-android/19/libandroid.so;general;log;general;GLESv2;
 
 
 ########################

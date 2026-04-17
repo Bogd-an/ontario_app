@@ -11,3 +11,5 @@ find_library(android-lib android)
 target_link_libraries(native_stream
                       ${log-lib}
                       ${android-lib})
+
+target_link_libraries(native_stream log GLESv2)
