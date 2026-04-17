@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
+#include <android/rect.h>
 #include <android/log.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -26,6 +27,7 @@ volatile int is_running = 0;
 int server_sock = -1;
 int client_sock = -1;
 
+// Захищене читання з обробкою переривань
 ssize_t read_all(int sock, void *buf, size_t count) {
     size_t total = 0;
     char *p = (char *)buf;
@@ -36,7 +38,7 @@ ssize_t read_all(int sock, void *buf, size_t count) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) return total;
             return -1;
         }
-        if (r == 0) return 0;
+        if (r == 0) return 0; // Сокет закрито
         total += r;
     }
     return total;
@@ -48,21 +50,29 @@ Java_com_ontario_app_MainActivity_startNativeStream(
 
     LOGI("Запуск %dx%d...", width, height);
     is_running = 1;
+    
+    // Ігноруємо SIGPIPE, щоб додаток не падав при різкому обриві з'єднання
     signal(SIGPIPE, SIG_IGN);
 
     ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
     if (!window) return;
     ANativeWindow_setBuffersGeometry(window, width, height, WINDOW_FORMAT_RGB_565);
 
-    uint16_t *master_frame = (uint16_t *)calloc(1, MAX_W * MAX_H * 2);
-    uint16_t *net_buffer   = (uint16_t *)malloc(MAX_W * MAX_H * 2);
+    uint16_t *master_frame = NULL;
+    uint16_t *net_buffer = NULL;
+
+    // ВИПРАВЛЕННЯ 1: Вирівнювання пам'яті для x86 (Intel Atom дуже чутливий до цього)
+    posix_memalign((void**)&master_frame, 32, MAX_W * MAX_H * 2);
+    posix_memalign((void**)&net_buffer, 32, MAX_W * MAX_H * 2);
 
     if (!master_frame || !net_buffer) {
         LOGE("Не вистачає RAM!");
-        free(master_frame); free(net_buffer);
+        if(master_frame) free(master_frame);
+        if(net_buffer) free(net_buffer);
         ANativeWindow_release(window);
         return;
     }
+    memset(master_frame, 0, MAX_W * MAX_H * 2);
 
     server_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (server_sock < 0) {
@@ -90,23 +100,21 @@ Java_com_ontario_app_MainActivity_startNativeStream(
     }
     listen(server_sock, 1);
 
-    int stride = -1;
-    int safe_w = -1;
-    int safe_h = -1;
-
     while (is_running) {
         LOGI("Очікування підключення...");
         client_sock = accept(server_sock, NULL, NULL);
-        if (client_sock < 0) continue;
+        if (client_sock < 0) {
+            usleep(100000); // Запобігає 100% CPU, якщо accept сипле помилками
+            continue;
+        }
         LOGI("Підключено!");
 
-        struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
+        struct timeval tv = { .tv_sec = 2, .tv_usec = 0 }; // Трохи зменшив таймаут
         setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         int nodelay = 1;
         setsockopt(client_sock, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
         memset(master_frame, 0, MAX_W * MAX_H * 2);
-
         uint16_t header[4];
 
         while (is_running) {
@@ -130,35 +138,39 @@ Java_com_ontario_app_MainActivity_startNativeStream(
             ssize_t p_read = read_all(client_sock, net_buffer, bytes);
             if (p_read != (ssize_t)bytes) { LOGE("Неповний кадр"); break; }
 
-            // КРОК 1: патч → master_frame
+            // Оновлюємо master_frame (наше внутрішнє сховище)
             for (int row = 0; row < h; row++) {
                 uint16_t *dst = master_frame + (y + row) * MAX_W + x;
                 uint16_t *src = net_buffer   + row * w;
                 memcpy(dst, src, (size_t)w * 2);
             }
 
-            // КРОК 2: весь master_frame → ANativeWindow
-            // Копіюємо ПОВНИЙ буфер щоб обидва GPU-буфери були однакові
-            ANativeWindow_Buffer buf;
-            if (ANativeWindow_lock(window, &buf, NULL) != 0) continue;
+            // ВИПРАВЛЕННЯ 2: Використовуємо Dirty Rects замість копіювання всього екрану
+            ARect dirtyBounds;
+            dirtyBounds.left   = x;
+            dirtyBounds.top    = y;
+            dirtyBounds.right  = x + w;
+            dirtyBounds.bottom = y + h;
 
-            if (stride < 0) {
-                stride = buf.stride;
-                safe_w = (width  < buf.width)  ? width  : buf.width;
-                safe_h = (height < buf.height) ? height : buf.height;
-                LOGI("stride=%d safe=%dx%d", stride, safe_w, safe_h);
+            ANativeWindow_Buffer buf;
+            // Передаємо dirtyBounds. Система сама вирішить, яку область нам дозволити перемалювати
+            if (ANativeWindow_lock(window, &buf, &dirtyBounds) != 0) {
+                usleep(5000); // Чекаємо, якщо Surface тимчасово недоступний
+                continue;
             }
 
-            if (stride == MAX_W) {
-                // Найшвидший шлях: один memcpy
-                memcpy(buf.bits, master_frame, (size_t)MAX_W * safe_h * 2);
-            } else {
-                // Запасний шлях: рядок за рядком якщо stride != MAX_W
-                for (int row = 0; row < safe_h; row++) {
-                    uint16_t *src = master_frame + row * MAX_W;
-                    uint16_t *dst = (uint16_t *)buf.bits + row * stride;
-                    memcpy(dst, src, (size_t)safe_w * 2);
-                }
+            // Копіюємо ТІЛЬКИ ту область, яку запросила система (вона може бути ширшою за наш патч)
+            int copy_w = dirtyBounds.right - dirtyBounds.left;
+            int copy_h = dirtyBounds.bottom - dirtyBounds.top;
+
+            for (int row = 0; row < copy_h; row++) {
+                int src_y = dirtyBounds.top + row;
+                if (src_y >= MAX_H) break; // Захист від виходу за межі
+
+                uint16_t *src = master_frame + src_y * MAX_W + dirtyBounds.left;
+                uint16_t *dst = (uint16_t *)buf.bits + (src_y * buf.stride) + dirtyBounds.left;
+                
+                memcpy(dst, src, copy_w * 2);
             }
 
             ANativeWindow_unlockAndPost(window);
@@ -167,7 +179,6 @@ Java_com_ontario_app_MainActivity_startNativeStream(
         LOGI("Закриваємо з'єднання...");
         if (client_sock != -1) {
             shutdown(client_sock, SHUT_RDWR);
-            usleep(50000);
             close(client_sock);
             client_sock = -1;
         }
@@ -181,6 +192,7 @@ Java_com_ontario_app_MainActivity_startNativeStream(
 JNIEXPORT void JNICALL
 Java_com_ontario_app_MainActivity_stopNativeStream(JNIEnv *env, jobject thiz) {
     is_running = 0;
+    // Жорстко перериваємо блокуючі виклики accept() та recv()
     if (client_sock != -1) { shutdown(client_sock, SHUT_RDWR); close(client_sock); }
     if (server_sock != -1) { shutdown(server_sock, SHUT_RDWR); close(server_sock); }
 }
